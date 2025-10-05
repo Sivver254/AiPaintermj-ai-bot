@@ -1,7 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
-from aiogram.utils.markdown import hbold
 from .horde import HordeClient
 from .config import load_settings
 from .keyboards import main_kb, styles_kb
@@ -14,11 +13,11 @@ settings = load_settings()
 horde = HordeClient(api_key=settings.horde_key)
 
 HELP = (
-    "Это бесплатный генератор картинок @AiPaintermj_bot 🎨\n\n"
+    "Это бесплатный генератор картинок AiPaintermj_bot.\n\n"
     "Как пользоваться:\n"
     "• Нажми «🎨 Создать картинку» и напиши промпт\n"
     "• Или команды: /imagine <текст>, /realism <текст>, /anime <текст>, /pixel <текст>\n"
-    "• Параметры (необязательно): --w 768 --h 512 --steps 30 --cfg 7\n"
+    "• Доп. параметры (необяз.): --w 768 --h 512 --steps 30 --cfg 7\n"
     "Подсказка: чем конкретнее описание, тем лучше результат."
 )
 
@@ -29,6 +28,7 @@ STYLE_PROMPTS = {
 }
 
 def parse_params(text: str):
+    """Парсим флаги --w --h --steps --cfg и возвращаем (чистый_промпт, w, h, steps, cfg)."""
     width = int(re.search(r"--w\s+(\d+)", text).group(1)) if re.search(r"--w\s+(\d+)", text) else 768
     height = int(re.search(r"--h\s+(\d+)", text).group(1)) if re.search(r"--h\s+(\d+)", text) else 768
     steps = int(re.search(r"--steps\s+(\d+)", text).group(1)) if re.search(r"--steps\s+(\d+)", text) else 28
@@ -37,12 +37,13 @@ def parse_params(text: str):
     return clean, width, height, steps, cfg
 
 async def _generate_and_send(m: Message, prompt: str, style_key: str | None):
+    """Генерим картинку через Stable Horde и отправляем в чат."""
     prefix = STYLE_PROMPTS.get(style_key or "", "")
     final_prompt = f"{prefix}. {prompt}".strip(". ")
 
-    await m.answer("⏳ Генерация… (на бесплатном кластере может занять ~полминуты)", reply_markup=main_kb())
+    await m.answer("Генерация... это может занять до минуты на бесплатном кластере.", reply_markup=main_kb())
     try:
-        req_id = await horde.generate(final_prompt)
+        req_id = await horde.generate(final_prompt)  # используем дефолтные параметры
         status = await horde.wait_for_result(req_id)
         gens = status.get("generations") or status.get("images") or []
         if not gens:
@@ -52,7 +53,9 @@ async def _generate_and_send(m: Message, prompt: str, style_key: str | None):
         b64 = gens[0].get("img") if isinstance(gens[0], dict) else gens[0]
         img_bytes = base64.b64decode(b64)
         im = Image.open(BytesIO(img_bytes)).convert("RGB")
-        out = BytesIO(); im.save(out, format="JPEG", quality=92); out.seek(0)
+        out = BytesIO()
+        im.save(out, format="JPEG", quality=92)
+        out.seek(0)
 
         cap_style = style_key or "без стиля"
         await m.answer_photo(out, caption=f"Стиль: {cap_style}\nЗапрос: {prompt}", reply_markup=main_kb())
@@ -61,12 +64,21 @@ async def _generate_and_send(m: Message, prompt: str, style_key: str | None):
 
 @router.message(CommandStart())
 async def start(m: Message):
-    await m.answer(f"Привет, {hbold(m.from_user.full_name)}!\n{HELP}", reply_markup=main_kb())
+    text = (
+        "Привет! Это AiPaintermj_bot — бесплатный генератор картинок.\n\n"
+        "Как пользоваться:\n"
+        "• Нажми «🎨 Создать картинку» и напиши промпт\n"
+        "• Или команды: /imagine <текст>, /realism <текст>, /anime <текст>, /pixel <текст>\n"
+        "• Доп. параметры (необяз.): --w 768 --h 512 --steps 30 --cfg 7\n\n"
+        "Подсказка: чем конкретнее описание, тем лучше результат."
+    )
+    await m.answer(text, reply_markup=main_kb())
 
 @router.message(Command("help"))
 async def help_cmd(m: Message):
     await m.answer(HELP, reply_markup=main_kb())
 
+# Кнопки нижней клавиатуры
 @router.message(F.text == "ℹ️ Помощь")
 async def help_btn(m: Message):
     await m.answer(HELP, reply_markup=main_kb())
@@ -81,8 +93,9 @@ async def back_to_main(m: Message):
 
 @router.message(F.text == "🎨 Создать картинку")
 async def create_btn(m: Message):
-    await m.answer("Напиши описание картинки (промпт). Например: «кот в космосе на фоне туманности»", reply_markup=main_kb())
+    await m.answer("Напиши описание картинки (промпт). Например: «кот в космосе на фоне туманности».", reply_markup=main_kb())
 
+# Команды
 @router.message(Command("imagine"))
 async def imagine(m: Message):
     parts = m.text.split(maxsplit=1)
@@ -90,6 +103,7 @@ async def imagine(m: Message):
         await m.answer("Пример: /imagine кот в космосе --w 768 --h 512", reply_markup=main_kb())
         return
     text, w, h, steps, cfg = parse_params(parts[1])
+    # Параметры пока не прокидываем в Horde (MVP), позже добавим.
     await _generate_and_send(m, text, style_key=None)
 
 @router.message(Command("realism"))
@@ -119,6 +133,7 @@ async def pixel(m: Message):
     text, *_ = parse_params(parts[1])
     await _generate_and_send(m, text, style_key="pixel")
 
+# Любой текст без /команд — генерим по умолчанию в стиле "реализм"
 @router.message(F.text & ~F.text.startswith("/"))
 async def free_prompt(m: Message):
     await _generate_and_send(m, m.text.strip(), style_key="realism")
